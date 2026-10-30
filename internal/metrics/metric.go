@@ -116,12 +116,16 @@ func newMetric(keyLen int) *Metric {
 	}
 }
 
+// labelValueKeyEscaper escapes the separator used by buildLabelValueKey and
+// the escape character itself, so that the encoding of a label is unambiguous
+// and no two different label tuples can produce the same key.
+var labelValueKeyEscaper = strings.NewReplacer(`\`, `\\`, "-", `\-`)
+
 // buildLabelValueKey returns a unique key for the given labels.
 func buildLabelValueKey(labels []string) string {
 	var buf strings.Builder
 	for i := 0; i < len(labels); i++ {
-		rs := strings.ReplaceAll(labels[i], "-", "\\-")
-		buf.WriteString(rs)
+		buf.WriteString(labelValueKeyEscaper.Replace(labels[i]))
 		buf.WriteString("-")
 	}
 	return buf.String()

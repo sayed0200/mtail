@@ -142,6 +142,37 @@ func TestFindLabelValueOrNil(t *testing.T) {
 	}
 }
 
+func TestBuildLabelValueKeyDistinct(t *testing.T) {
+	// Label values that only differ in where the escape character and the
+	// separator fall must not alias each other.
+	for _, tc := range []struct {
+		a, b []string
+	}{
+		{[]string{`a\`, `-b`}, []string{`a-\`, `b`}},
+		{[]string{`a\`, `b`}, []string{`a\\`, `b`}},
+		{[]string{`a\-`, `b`}, []string{`a-`, `b`}},
+		{[]string{`a-b`, ``}, []string{`a`, `b`}},
+	} {
+		if ka, kb := buildLabelValueKey(tc.a), buildLabelValueKey(tc.b); ka == kb {
+			t.Errorf("labels %q and %q produce the same key %q", tc.a, tc.b, ka)
+		}
+		m := NewMetric("foo", "prog", Counter, Int, "x", "y")
+		da, err := m.GetDatum(tc.a...)
+		testutil.FatalIfErr(t, err)
+		db, err := m.GetDatum(tc.b...)
+		testutil.FatalIfErr(t, err)
+		if da == db {
+			t.Errorf("labels %q and %q share a datum", tc.a, tc.b)
+		}
+		if lv := m.FindLabelValueOrNil(tc.a); lv == nil || !reflect.DeepEqual(lv.Labels, tc.a) {
+			t.Errorf("FindLabelValueOrNil(%q) returned %v", tc.a, lv)
+		}
+		if lv := m.FindLabelValueOrNil(tc.b); lv == nil || !reflect.DeepEqual(lv.Labels, tc.b) {
+			t.Errorf("FindLabelValueOrNil(%q) returned %v", tc.b, lv)
+		}
+	}
+}
+
 func TestAppendLabelValue(t *testing.T) {
 	m := NewMetric("foo", "prog", Counter, Int, "bar")
 	l := []string{"test"}
