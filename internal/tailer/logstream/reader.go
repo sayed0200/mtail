@@ -8,6 +8,7 @@ import (
 	"context"
 	"expvar"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/google/mtail/internal/logline"
@@ -27,6 +28,7 @@ type LineReader struct {
 	size int
 	buf  []byte
 	off  int // tracks the start of the next line in buf
+	scan int // bytes after off already searched for a newline
 }
 
 // NewLineReader creates a new LineReader
@@ -44,7 +46,7 @@ func NewLineReader(sourcename string, lines chan<- *logline.LogLine, f io.Reader
 // ReadAndSend reads bytes from f, attempts to find line endings in the bytes read, and sends them to the lines channel.  It manages the read buffer size to make sure we can always read size bytes.
 func (lr *LineReader) ReadAndSend(ctx context.Context) (count int, err error) {
 	if cap(lr.buf)-len(lr.buf) < lr.size {
-		lr.buf = append(make([]byte, 0, len(lr.buf)+lr.size), lr.buf...)
+		lr.buf = slices.Grow(lr.buf, lr.size)
 	}
 	count, err = lr.f.Read(lr.buf[len(lr.buf):cap(lr.buf)])
 	if lr.staleTimer != nil {
@@ -67,13 +69,14 @@ func (lr *LineReader) ReadAndSend(ctx context.Context) (count int, err error) {
 // send sends the line and resets the buffer offset
 func (lr *LineReader) send(ctx context.Context) bool {
 	lim := min(len(lr.buf), cap(lr.buf))
-	i := bytes.IndexByte(lr.buf[lr.off:lim], '\n')
+	i := bytes.IndexByte(lr.buf[lr.off+lr.scan:lim], '\n')
 	// No newlines in the latest bytes, wait for next read
 	if i < 0 {
+		lr.scan = lim - lr.off
 		return false
 	}
-	end := lr.off + i // excluding delim
-	skip := 1         // len of delim char
+	end := lr.off + lr.scan + i // excluding delim
+	skip := 1                   // len of delim char
 
 	// Most file-based log sources will end with \n on Unixlike systems.  On
 	// Windows they appear to be both \r\n.  syslog disallows \r (and \t and
@@ -91,6 +94,7 @@ func (lr *LineReader) send(ctx context.Context) bool {
 	logLines.Add(lr.sourcename, 1)
 	lr.lines <- logline.New(ctx, lr.sourcename, line)
 	lr.off = end + skip // move past delim
+	lr.scan = 0
 	return true
 }
 

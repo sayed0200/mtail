@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -120,5 +121,44 @@ func TestReadAndSendSplitBytes(t *testing.T) {
 				t.Errorf("decodeAndSend() line unexpected diff (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+// newlineFreeReader yields n bytes with no newline, at most chunk bytes per Read.
+type newlineFreeReader struct{ n, chunk int }
+
+func (r *newlineFreeReader) Read(p []byte) (int, error) {
+	if r.n == 0 {
+		return 0, io.EOF
+	}
+	c := min(len(p), r.chunk, r.n)
+	for i := range p[:c] {
+		p[i] = 'a'
+	}
+	r.n -= c
+	return c, nil
+}
+
+func TestReadAndSendLongLineIsLinear(t *testing.T) {
+	// A long line with no newline must not cause the buffer to be reallocated
+	// and copied on every read, which is quadratic in the line length.
+	const lineLen = 8 << 20
+	lines := make(chan *logline.LogLine, 1)
+	lr := NewLineReader("testPath", lines, &newlineFreeReader{n: lineLen, chunk: 64 << 10}, 128<<10, func() {})
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for {
+		if _, err := lr.ReadAndSend(context.Background()); err != nil {
+			break
+		}
+	}
+	runtime.ReadMemStats(&after)
+
+	if got := len(lr.buf) - lr.off; got != lineLen {
+		t.Fatalf("partial line length %d, want %d", got, lineLen)
+	}
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 8*lineLen {
+		t.Errorf("reading a %d byte line allocated %d bytes, want at most %d", lineLen, alloc, 8*lineLen)
 	}
 }
